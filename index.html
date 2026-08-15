@@ -1,0 +1,651 @@
+import React, { useState, useEffect, useMemo } from "react";
+import {
+  LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend
+} from "recharts";
+import {
+  Radio, Database, Network, GitBranch, ScrollText, TriangleAlert,
+  ShieldQuestion, Compass, Filter, ChevronRight, CircleDot, Info
+} from "lucide-react";
+
+/* ---------------------------------------------------------------
+   ATHENA — XRP forensic intelligence platform (frontend shell)
+   All data below is DEMO. No live XRPL node / paid feeds attached.
+   Every metric is explicitly state-tagged per ATHENA's own rule:
+   LIVE / DELAYED / PARTIAL / ESTIMATED / UNAVAILABLE / DEMO
+----------------------------------------------------------------*/
+
+const FONTS = `
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+`;
+
+const COLORS = {
+  bg: "#0B0E11",
+  panel: "#12161C",
+  panelAlt: "#171B21",
+  hairline: "#262B33",
+  hairlineLight: "#333944",
+  text: "#E8E6DE",
+  dim: "#8A8F98",
+  faint: "#565C66",
+  brass: "#C9A227",
+  brassDim: "#8A7420",
+  rust: "#C4573F",
+  sage: "#5B8A72",
+  slate: "#5C7C99",
+};
+
+const STATE_COLOR = {
+  LIVE: COLORS.sage,
+  DELAYED: COLORS.slate,
+  PARTIAL: COLORS.brass,
+  ESTIMATED: COLORS.brass,
+  UNAVAILABLE: COLORS.faint,
+  DEMO: COLORS.rust,
+};
+
+/* ---------------- Stamp: the signature visual element ---------------- */
+function Stamp({ state, small }) {
+  const color = STATE_COLOR[state] || COLORS.dim;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: small ? 9 : 10,
+        letterSpacing: "0.12em",
+        color,
+        border: `1px solid ${color}`,
+        borderRadius: 2,
+        padding: small ? "1px 5px" : "2px 7px",
+        transform: "rotate(-1.5deg)",
+        background: `${color}0F`,
+        whiteSpace: "nowrap",
+        userSelect: "none",
+      }}
+    >
+      <CircleDot size={small ? 8 : 9} strokeWidth={3} />
+      {state}
+    </span>
+  );
+}
+
+/* ---------------- Demo data ---------------- */
+
+const ENTITIES = [
+  { id: "e1", name: "Ripple Escrow (documented)", category: "Escrow", score: 0.12, state: "PARTIAL", confidence: 0.81, note: "Scheduled monthly release pattern matches public escrow schedule." },
+  { id: "e2", name: "Cluster A7 — unlabeled, exchange-adjacent", category: "Unknown", score: 0.64, state: "DEMO", confidence: 0.34, note: "Repeated inbound from 3 major exchange hot wallets, no outbound in 41d." },
+  { id: "e3", name: "Known custody infra (labeled)", category: "Custody", score: 0.28, state: "DEMO", confidence: 0.57, note: "Balance trend positive but consistent with client onboarding, not conviction accumulation." },
+  { id: "e4", name: "Cluster B2 — dormant reactivation", category: "Unknown", score: 0.71, state: "DEMO", confidence: 0.29, note: "Address dormant 2.1y, received large transfer, no further movement 9d." },
+  { id: "e5", name: "Exchange hot wallet — Tier 1", category: "Exchange", score: -0.18, state: "DEMO", confidence: 0.88, note: "Net outbound, consistent with internal cold-storage reshuffle, excluded from accumulation read." },
+  { id: "e6", name: "Cluster C1 — OTC fingerprint match (2/4)", category: "OTC-suspected", score: 0.55, state: "DEMO", confidence: 0.22, note: "Two of four OTC heuristics matched. Insufficient to elevate confidence further." },
+];
+
+const FLOW_BREAKDOWN = [
+  { name: "Internal reshuffle", value: 61, color: COLORS.faint },
+  { name: "Exchange \u2194 exchange", value: 14, color: COLORS.slate },
+  { name: "Escrow release", value: 9, color: COLORS.brass },
+  { name: "Unlabeled accumulation", value: 11, color: COLORS.rust },
+  { name: "OTC-suspected", value: 5, color: COLORS.sage },
+];
+
+const DIVERGENCE_SERIES = Array.from({ length: 30 }, (_, i) => {
+  const day = i + 1;
+  const priceBase = 2.15 + Math.sin(i / 4) * 0.12 + i * 0.004;
+  const flowBase = 0.1 + Math.sin(i / 6 + 1) * 0.35 + (i > 20 ? 0.18 : 0);
+  return {
+    day: `D${day}`,
+    price: +priceBase.toFixed(3),
+    netFlowScore: +flowBase.toFixed(2),
+  };
+});
+
+const SIGNAL_LOG = [
+  { id: "s1", ts: "2026-08-15 03:12 UTC", hypothesis: "Cluster A7 accumulation precedes exchange listing of new custody rail", status: "pending", state: "DEMO" },
+  { id: "s2", ts: "2026-08-14 22:41 UTC", hypothesis: "Large exchange outflow (2.4M XRP) driven by cold-storage policy change, not accumulation", status: "confirmed", state: "DEMO" },
+  { id: "s3", ts: "2026-08-13 14:05 UTC", hypothesis: "Dormant-address reactivation (Cluster B2) indicates custodial key rotation, not new buyer", status: "inconclusive", state: "DEMO" },
+  { id: "s4", ts: "2026-08-11 09:57 UTC", hypothesis: "Escrow release fully absorbed by market-maker inventory within 6h", status: "refuted", state: "DEMO" },
+  { id: "s5", ts: "2026-08-09 19:23 UTC", hypothesis: "Price divergence on D21\u201323 explained by underlying net accumulation, not derivatives positioning", status: "pending", state: "DEMO" },
+  { id: "s6", ts: "2026-08-06 11:48 UTC", hypothesis: "OTC fingerprint cluster C1 linked to single counterparty across 3 transfers", status: "confirmed", state: "DEMO" },
+];
+
+const STATUS_STYLE = {
+  pending: { color: COLORS.slate, label: "PENDING" },
+  confirmed: { color: COLORS.sage, label: "CONFIRMED" },
+  refuted: { color: COLORS.rust, label: "REFUTED" },
+  inconclusive: { color: COLORS.brass, label: "INCONCLUSIVE" },
+};
+
+const KPI = [
+  {
+    q: "WHO",
+    icon: Compass,
+    verdict: "2 unlabeled clusters show elevated inbound concentration",
+    detail: "Cluster A7 and B2 account for 71% of unexplained net inflow this window. Neither matches a known entity tag.",
+    state: "DEMO",
+  },
+  {
+    q: "WHERE",
+    icon: Network,
+    verdict: "61% of gross movement is internal exchange reshuffling",
+    detail: "After excluding hot\u2192cold and cross-venue transfers, genuine external flow is a fraction of headline volume.",
+    state: "DEMO",
+  },
+  {
+    q: "WHAT",
+    icon: GitBranch,
+    verdict: "No behaviour clears the bar for 'likely accumulation'",
+    detail: "Highest-confidence cluster (e5) sits at 0.88 confidence but score is negative (distribution-consistent, reshuffle).",
+    state: "DEMO",
+  },
+  {
+    q: "WHY",
+    icon: TriangleAlert,
+    verdict: "Flow and price diverge on days 21\u201323 — unresolved",
+    detail: "Net-flow score rose while price stayed flat. Open signal s5 is tracking this; not yet confirmed or refuted.",
+    state: "DEMO",
+  },
+];
+
+/* ---------------- UI atoms ---------------- */
+
+function Panel({ title, icon: Icon, state, children, right }) {
+  return (
+    <div
+      style={{
+        background: COLORS.panel,
+        border: `1px solid ${COLORS.hairline}`,
+        borderRadius: 3,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "12px 16px",
+          borderBottom: `1px solid ${COLORS.hairline}`,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {Icon && <Icon size={14} color={COLORS.brass} strokeWidth={1.75} />}
+          <span
+            style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 11,
+              letterSpacing: "0.14em",
+              color: COLORS.dim,
+              textTransform: "uppercase",
+            }}
+          >
+            {title}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {right}
+          {state && <Stamp state={state} small />}
+        </div>
+      </div>
+      <div style={{ padding: 16 }}>{children}</div>
+    </div>
+  );
+}
+
+function ScoreBar({ value }) {
+  // value: -1 to 1
+  const pct = ((value + 1) / 2) * 100;
+  const color = value > 0.15 ? COLORS.rust : value < -0.15 ? COLORS.sage : COLORS.dim;
+  return (
+    <div style={{ position: "relative", height: 5, background: COLORS.hairline, borderRadius: 2, overflow: "hidden" }}>
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: 0,
+          bottom: 0,
+          width: 1,
+          background: COLORS.faint,
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: value >= 0 ? "50%" : `${pct}%`,
+          width: `${Math.abs(pct - 50)}%`,
+          background: color,
+        }}
+      />
+    </div>
+  );
+}
+
+/* ---------------- Main App ---------------- */
+
+export default function Athena() {
+  const [tab, setTab] = useState("overview");
+  const [notes, setNotes] = useState({});
+  const [noteDraft, setNoteDraft] = useState("");
+  const [activeSignal, setActiveSignal] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("athena:analyst-notes");
+        if (res && res.value) setNotes(JSON.parse(res.value));
+      } catch (e) {
+        // no notes yet
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  async function saveNote(signalId) {
+    if (!noteDraft.trim()) return;
+    const next = {
+      ...notes,
+      [signalId]: [...(notes[signalId] || []), { text: noteDraft.trim(), ts: new Date().toISOString() }],
+    };
+    setNotes(next);
+    setNoteDraft("");
+    try {
+      await window.storage.set("athena:analyst-notes", JSON.stringify(next));
+    } catch (e) {
+      console.error("storage failed", e);
+    }
+  }
+
+  const tabs = [
+    { id: "overview", label: "Overview", icon: Compass },
+    { id: "entities", label: "Entities", icon: Network },
+    { id: "flows", label: "Flows", icon: GitBranch },
+    { id: "divergence", label: "Divergence", icon: TriangleAlert },
+    { id: "evidence", label: "Evidence Log", icon: ScrollText },
+  ];
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: COLORS.bg,
+        color: COLORS.text,
+        fontFamily: "'Inter', sans-serif",
+      }}
+    >
+      <style>{FONTS}</style>
+
+      {/* Header */}
+      <div style={{ borderBottom: `1px solid ${COLORS.hairline}`, background: COLORS.panelAlt }}>
+        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 20px 16px" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                <h1
+                  style={{
+                    fontFamily: "'Newsreader', serif",
+                    fontWeight: 500,
+                    fontSize: 30,
+                    letterSpacing: "0.01em",
+                    margin: 0,
+                  }}
+                >
+                  ATHENA
+                </h1>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: COLORS.faint, letterSpacing: "0.08em" }}>
+                  XRP FLOW &amp; ENTITY INTELLIGENCE
+                </span>
+              </div>
+              <p style={{ margin: "6px 0 0", fontSize: 13, color: COLORS.dim, maxWidth: 560, lineHeight: 1.5 }}>
+                Detecting hidden institutional, OTC and large-holder XRP activity before it surfaces in price. Evidence-first — prefers "insufficient evidence" over confident guesses.
+              </p>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <Stamp state="DEMO" />
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: COLORS.faint, marginTop: 8, lineHeight: 1.6 }}>
+                NO LIVE NODE ATTACHED<br />ALL SCORES ILLUSTRATIVE
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* Tabs */}
+        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "0 20px", display: "flex", gap: 2, overflowX: "auto" }}>
+          {tabs.map((t) => {
+            const active = tab === t.id;
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "10px 14px",
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: active ? `2px solid ${COLORS.brass}` : "2px solid transparent",
+                  color: active ? COLORS.text : COLORS.dim,
+                  fontFamily: "'IBM Plex Mono', monospace",
+                  fontSize: 11,
+                  letterSpacing: "0.08em",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <Icon size={13} strokeWidth={1.75} />
+                {t.label.toUpperCase()}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 1180, margin: "0 auto", padding: "22px 20px 60px" }}>
+        {tab === "overview" && (
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12, marginBottom: 20 }}>
+              {KPI.map((k) => {
+                const Icon = k.icon;
+                return (
+                  <div
+                    key={k.q}
+                    style={{
+                      background: COLORS.panel,
+                      border: `1px solid ${COLORS.hairline}`,
+                      borderRadius: 3,
+                      padding: 16,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                        <Icon size={14} color={COLORS.brass} strokeWidth={1.75} />
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: COLORS.faint }}>
+                          {k.q}
+                        </span>
+                      </div>
+                      <Stamp state={k.state} small />
+                    </div>
+                    <p style={{ fontFamily: "'Newsreader', serif", fontSize: 16, lineHeight: 1.4, margin: "0 0 8px", color: COLORS.text }}>
+                      {k.verdict}
+                    </p>
+                    <p style={{ fontSize: 12.5, color: COLORS.dim, lineHeight: 1.55, margin: 0 }}>{k.detail}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <Panel title="Flow composition — last 7d" icon={GitBranch} state="DEMO">
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={FLOW_BREAKDOWN} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="2 4" stroke={COLORS.hairline} horizontal={false} />
+                  <XAxis type="number" tick={{ fill: COLORS.faint, fontSize: 11, fontFamily: "IBM Plex Mono" }} unit="%" stroke={COLORS.hairline} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={170}
+                    tick={{ fill: COLORS.dim, fontSize: 11.5, fontFamily: "Inter" }}
+                    stroke={COLORS.hairline}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.hairline}`, fontSize: 12, fontFamily: "IBM Plex Mono" }}
+                    labelStyle={{ color: COLORS.text }}
+                    formatter={(v) => [`${v}%`, "share of gross volume"]}
+                  />
+                  <Bar dataKey="value" radius={[0, 2, 2, 0]}>
+                    {FLOW_BREAKDOWN.map((d, i) => (
+                      <Bar key={i} dataKey="value" fill={d.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <p style={{ fontSize: 11.5, color: COLORS.faint, marginTop: 8, lineHeight: 1.5 }}>
+                Internal reshuffling is excluded from every accumulation/distribution score computed elsewhere in ATHENA — shown here only to make the exclusion auditable.
+              </p>
+            </Panel>
+          </div>
+        )}
+
+        {tab === "entities" && (
+          <Panel title="Entity clusters — accumulation / distribution" icon={Network} state="DEMO">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {ENTITIES.map((e) => (
+                <div
+                  key={e.id}
+                  style={{
+                    border: `1px solid ${COLORS.hairline}`,
+                    borderRadius: 3,
+                    padding: 14,
+                    background: COLORS.panelAlt,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>{e.name}</div>
+                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: COLORS.faint, letterSpacing: "0.06em", marginTop: 2 }}>
+                        {e.category.toUpperCase()} &middot; CONFIDENCE {(e.confidence * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                    <Stamp state={e.state} small />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <ScoreBar value={e.score} />
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: "'IBM Plex Mono', monospace",
+                        fontSize: 12,
+                        color: e.score > 0.15 ? COLORS.rust : e.score < -0.15 ? COLORS.sage : COLORS.dim,
+                        minWidth: 46,
+                        textAlign: "right",
+                      }}
+                    >
+                      {e.score > 0 ? "+" : ""}
+                      {e.score.toFixed(2)}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 12, color: COLORS.dim, margin: 0, lineHeight: 1.5 }}>{e.note}</p>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: 11, color: COLORS.faint, marginTop: 12, display: "flex", gap: 6, alignItems: "flex-start" }}>
+              <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              Score axis: sage (negative) = distribution-consistent, rust (positive) = accumulation-consistent, centered at zero. Low confidence does not round up to "likely."
+            </p>
+          </Panel>
+        )}
+
+        {tab === "flows" && (
+          <Panel title="Gross vs. net flow — composition breakdown" icon={GitBranch} state="DEMO">
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={FLOW_BREAKDOWN} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="2 4" stroke={COLORS.hairline} vertical={false} />
+                <XAxis dataKey="name" tick={{ fill: COLORS.dim, fontSize: 10.5, fontFamily: "Inter" }} stroke={COLORS.hairline} interval={0} angle={-18} textAnchor="end" height={70} />
+                <YAxis tick={{ fill: COLORS.faint, fontSize: 11, fontFamily: "IBM Plex Mono" }} unit="%" stroke={COLORS.hairline} />
+                <Tooltip
+                  contentStyle={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.hairline}`, fontSize: 12, fontFamily: "IBM Plex Mono" }}
+                  formatter={(v) => [`${v}%`, "share"]}
+                />
+                <Bar dataKey="value" radius={[2, 2, 0, 0]}>
+                  {FLOW_BREAKDOWN.map((d, i) => (
+                    <Bar key={i} dataKey="value" fill={d.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={{ marginTop: 18, borderTop: `1px solid ${COLORS.hairline}`, paddingTop: 14 }}>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: COLORS.faint, letterSpacing: "0.1em", marginBottom: 10 }}>
+                ANTI-FALSE-POSITIVE FILTER LOG
+              </div>
+              {[
+                "Hot\u2192cold wallet transfer, same-entity match \u2192 excluded from net flow (61% of gross)",
+                "Cross-exchange rebalancing, matched by timing + amount correlation \u2192 excluded",
+                "Escrow scheduled release \u2192 tagged separately, not counted as accumulation or distribution",
+                "Address with single inbound tx and no history \u2192 held at PARTIAL confidence, not scored",
+              ].map((line, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, color: COLORS.dim, padding: "6px 0", borderBottom: i < 3 ? `1px solid ${COLORS.hairline}` : "none" }}>
+                  <Filter size={13} color={COLORS.brassDim} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <span style={{ lineHeight: 1.5 }}>{line}</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        )}
+
+        {tab === "divergence" && (
+          <Panel title="Price vs. underlying net-flow score — 30d" icon={TriangleAlert} state="DEMO">
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={DIVERGENCE_SERIES} margin={{ top: 8, right: 16, left: 0, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="2 4" stroke={COLORS.hairline} />
+                <XAxis dataKey="day" tick={{ fill: COLORS.faint, fontSize: 10, fontFamily: "IBM Plex Mono" }} stroke={COLORS.hairline} interval={4} />
+                <YAxis yAxisId="price" tick={{ fill: COLORS.faint, fontSize: 10, fontFamily: "IBM Plex Mono" }} stroke={COLORS.hairline} domain={["auto", "auto"]} />
+                <YAxis yAxisId="flow" orientation="right" tick={{ fill: COLORS.faint, fontSize: 10, fontFamily: "IBM Plex Mono" }} stroke={COLORS.hairline} domain={[-1, 1]} />
+                <ReferenceLine yAxisId="flow" y={0} stroke={COLORS.faint} strokeDasharray="2 3" />
+                <Tooltip
+                  contentStyle={{ background: COLORS.panelAlt, border: `1px solid ${COLORS.hairline}`, fontSize: 12, fontFamily: "IBM Plex Mono" }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11, fontFamily: "IBM Plex Mono" }} />
+                <Line yAxisId="price" type="monotone" dataKey="price" name="XRP price (USD)" stroke={COLORS.text} strokeWidth={1.5} dot={false} />
+                <Line yAxisId="flow" type="monotone" dataKey="netFlowScore" name="Net-flow score" stroke={COLORS.rust} strokeWidth={1.5} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+            <div
+              style={{
+                marginTop: 14,
+                padding: 12,
+                border: `1px solid ${COLORS.hairline}`,
+                borderLeft: `3px solid ${COLORS.rust}`,
+                background: COLORS.panelAlt,
+                borderRadius: 2,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <ShieldQuestion size={14} color={COLORS.rust} />
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.08em", color: COLORS.text }}>
+                  OPEN DIVERGENCE — DAYS 21&ndash;23
+                </span>
+              </div>
+              <p style={{ fontSize: 12.5, color: COLORS.dim, margin: 0, lineHeight: 1.55 }}>
+                Net-flow score rose sharply while price stayed roughly flat. This is logged as open signal <strong style={{ color: COLORS.text }}>s5</strong> in the Evidence Log rather than interpreted here \u2014 divergence alone does not establish direction of causality.
+              </p>
+            </div>
+          </Panel>
+        )}
+
+        {tab === "evidence" && (
+          <Panel title="Signal &amp; hypothesis ledger" icon={ScrollText} state="DEMO">
+            <p style={{ fontSize: 12, color: COLORS.faint, marginTop: 0, marginBottom: 14, lineHeight: 1.5 }}>
+              Every hypothesis ATHENA raises is logged here and never deleted on failure \u2014 refuted and inconclusive signals stay visible for later re-evaluation.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {SIGNAL_LOG.map((s, i) => {
+                const st = STATUS_STYLE[s.status];
+                const isOpen = activeSignal === s.id;
+                return (
+                  <div key={s.id} style={{ borderTop: i === 0 ? `1px solid ${COLORS.hairline}` : "none", borderBottom: `1px solid ${COLORS.hairline}` }}>
+                    <button
+                      onClick={() => setActiveSignal(isOpen ? null : s.id)}
+                      style={{
+                        width: "100%",
+                        background: "transparent",
+                        border: "none",
+                        textAlign: "left",
+                        padding: "12px 4px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 10,
+                        color: COLORS.text,
+                      }}
+                    >
+                      <ChevronRight
+                        size={14}
+                        color={COLORS.faint}
+                        style={{ marginTop: 3, flexShrink: 0, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13, lineHeight: 1.45 }}>{s.hypothesis}</span>
+                          <span
+                            style={{
+                              fontFamily: "'IBM Plex Mono', monospace",
+                              fontSize: 10,
+                              letterSpacing: "0.08em",
+                              color: st.color,
+                              border: `1px solid ${st.color}`,
+                              borderRadius: 2,
+                              padding: "2px 6px",
+                              height: "fit-content",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {st.label}
+                          </span>
+                        </div>
+                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: COLORS.faint, marginTop: 4 }}>{s.ts}</div>
+                      </div>
+                    </button>
+                    {isOpen && (
+                      <div style={{ padding: "0 4px 16px 28px" }}>
+                        {(notes[s.id] || []).map((n, idx) => (
+                          <div key={idx} style={{ fontSize: 12, color: COLORS.dim, padding: "6px 10px", background: COLORS.panelAlt, border: `1px solid ${COLORS.hairline}`, borderRadius: 2, marginBottom: 6 }}>
+                            {n.text}
+                          </div>
+                        ))}
+                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                          <input
+                            value={noteDraft}
+                            onChange={(ev) => setNoteDraft(ev.target.value)}
+                            placeholder="Add analyst note..."
+                            style={{
+                              flex: 1,
+                              background: COLORS.bg,
+                              border: `1px solid ${COLORS.hairline}`,
+                              borderRadius: 2,
+                              padding: "7px 10px",
+                              color: COLORS.text,
+                              fontSize: 12,
+                              fontFamily: "Inter",
+                            }}
+                          />
+                          <button
+                            onClick={() => saveNote(s.id)}
+                            style={{
+                              background: "transparent",
+                              border: `1px solid ${COLORS.brassDim}`,
+                              color: COLORS.brass,
+                              borderRadius: 2,
+                              padding: "7px 12px",
+                              fontSize: 11,
+                              fontFamily: "'IBM Plex Mono', monospace",
+                              letterSpacing: "0.06em",
+                              cursor: "pointer",
+                            }}
+                          >
+                            LOG
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Panel>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={{ borderTop: `1px solid ${COLORS.hairline}`, padding: "16px 20px", textAlign: "center" }}>
+        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: COLORS.faint, letterSpacing: "0.08em" }}>
+          ATHENA does not conclude. It measures, tags confidence, and preserves what it got wrong. &middot; ALL DATA ON THIS SCREEN: DEMO
+        </span>
+      </div>
+    </div>
+  );
+}
